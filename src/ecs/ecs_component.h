@@ -7,6 +7,15 @@ using EntityID = xg::Guid;
 
 class ECS;
 
+enum ComponentType
+{
+	COLLIDER,
+	RIGID_BODY,
+	MESH_RENDERER,
+	SCRIPT,
+	AUDIO_PLAYER	
+};
+
 class Component
 {
 private:
@@ -29,7 +38,14 @@ private:
 	friend class ECS;
 
 protected:
+	ComponentType type;
+
 	virtual void on_initialize() = 0;
+
+	bool get_initialized()
+	{
+		return initialized;
+	}
 
 public:
 	virtual ~Component() = default;
@@ -44,7 +60,12 @@ public:
 		return entityID;
 	}
 
-	virtual void start(EntityID entityID) = 0;
-	virtual void update(EntityID entityID, float deltaTime) = 0;
-	virtual void on_destroy(EntityID entityID) = 0;
+	ComponentType get_type() const noexcept
+	{
+		return type;
+	}
+
+	virtual void start() = 0;
+	virtual void update(float deltaTime) = 0;
+	virtual void on_destroy() = 0;
 };

@@ -9,17 +9,18 @@
 
 MeshRenderer::MeshRenderer()
 {
+	type = ComponentType::MESH_RENDERER;
 }
 
 MeshRenderer::~MeshRenderer()
 {
 }
 
-void MeshRenderer::start(EntityID entityID)
+void MeshRenderer::start()
 {
 }
 
-void MeshRenderer::update(EntityID entityID, float deltaTime)
+void MeshRenderer::update(float deltaTime)
 {
 	if (!modelID.isValid())
 		return;
@@ -27,7 +28,7 @@ void MeshRenderer::update(EntityID entityID, float deltaTime)
 	Renderer::instance->queue_render(get_entity_id(), modelID);
 }
 
-void MeshRenderer::on_destroy(EntityID entityID)
+void MeshRenderer::on_destroy()
 {
 	if (!modelID.isValid())
 		return;

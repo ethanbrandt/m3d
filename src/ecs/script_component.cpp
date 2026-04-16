@@ -3,7 +3,7 @@
 
 ScriptComponent::ScriptComponent()
 {
-	
+	type = ComponentType::SCRIPT;	
 }
 
 ScriptComponent::~ScriptComponent()
@@ -11,19 +11,19 @@ ScriptComponent::~ScriptComponent()
 
 }
 
-void ScriptComponent::start(EntityID entityID)
+void ScriptComponent::start()
 {
 	ScriptManager::instance->start_script(get_id());
 }
 
-void ScriptComponent::update(EntityID entityID, float deltaTime)
+void ScriptComponent::update(float deltaTime)
 {
-	ScriptManager::instance->update_script(get_id(), deltaTime);
+	//ScriptManager::instance->update_script(get_id(), deltaTime);
 }
 
-void ScriptComponent::on_destroy(EntityID entityID)
+void ScriptComponent::on_destroy()
 {
-	
+	ScriptManager::instance->destroy_script(get_id());
 }
 
 void ScriptComponent::set_module_name(std::string _moduleName)

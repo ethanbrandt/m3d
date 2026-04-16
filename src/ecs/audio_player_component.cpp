@@ -9,6 +9,7 @@ void AudioPlayer::on_initialize()
 AudioPlayer::AudioPlayer()
 {
 	sourceID = Audio::instance->create_source();
+	type = ComponentType::AUDIO_PLAYER;
 }
 
 AudioPlayer::~AudioPlayer()
@@ -16,16 +17,16 @@ AudioPlayer::~AudioPlayer()
 	Audio::instance->destroy_source(sourceID);
 }
 
-void AudioPlayer::start(EntityID entityID)
+void AudioPlayer::start()
 {
 }
 
-void AudioPlayer::update(EntityID entityID, float deltaTime)
+void AudioPlayer::update(float deltaTime)
 {
 	
 }
 
-void AudioPlayer::on_destroy(EntityID entityID)
+void AudioPlayer::on_destroy()
 {
 }
 

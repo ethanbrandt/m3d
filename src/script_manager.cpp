@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <numeric>
 
 #include <wren.hpp>
 
@@ -12,6 +13,12 @@
 #include "ecs.h"
 #include "input.h"
 #include "ecs/script_component.h"
+#include "ecs/rigid_body_component.h"
+#include "ecs/collider_component.h"
+#include "ecs/box_collider_component.h"
+#include "ecs/sphere_collider_component.h"
+#include "ecs/capsule_collider_component.h"
+#include "physics/physics.h"
 
 ScriptManager* ScriptManager::instance = nullptr;
 #pragma region INITIALIZATION
@@ -72,7 +79,7 @@ void ScriptManager::report_error(WrenVM *, WrenErrorType type, const char *modul
 
 void ScriptManager::free_loaded_module(WrenVM *, const char *, WrenLoadModuleResult result)
 {
-	delete[] result.userData;
+	delete[] static_cast<char*>(result.userData);
 }
 
 WrenHandle *ScriptManager::get_script_class(std::string moduleName)
@@ -194,9 +201,20 @@ void ScriptManager::register_script(EntityID entityID, ComponentID componentID, 
 	//TODO scriptFilePath stuff
 }
 
-void ScriptManager::remove_script(ComponentID id)
+void ScriptManager::remove_dirty_scripts()
 {
-	//TODO all of remove_script
+	for (auto id : dirtyScripts)
+	{
+		if (!id.isValid() || scripts.find(id) == scripts.end())
+			continue;
+		
+		if (scripts.at(id).scriptHandle != nullptr)
+			wrenReleaseHandle(vm, scripts.at(id).scriptHandle);
+		
+		scripts.erase(id);
+	}
+
+	dirtyScripts.clear();
 }
 
 void ScriptManager::start_script(ComponentID id)
@@ -204,7 +222,7 @@ void ScriptManager::start_script(ComponentID id)
 	wrenEnsureSlots(vm, 1);
 	wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
 	if (wrenCall(vm, onStart))
-		std::cout << "Error: failed to run on_start in " + scripts.at(id).moduleName + '\n';
+		std::cout << "[Script System Error] Failed to run on_start in " + scripts.at(id).moduleName + '\n';
 }
 
 void ScriptManager::update_script(ComponentID id, float deltaTime)
@@ -216,8 +234,21 @@ void ScriptManager::update_script(ComponentID id, float deltaTime)
 		std::cout << "Error: failed to run on_update in " + scripts.at(id).moduleName + '\n';
 }
 
+void ScriptManager::update_all_scripts(float deltaTime)
+{
+	for (auto& [componentID, scriptBinding] : scripts)
+	{
+		wrenEnsureSlots(vm, 2);
+		wrenSetSlotHandle(vm, 0, scriptBinding.scriptHandle);
+		wrenSetSlotDouble(vm, 1, deltaTime);
+		if (wrenCall(vm, onUpdate))
+			std::cout << "[Script System Error] Failed to run on_update in " + scriptBinding.moduleName + '\n';
+	}
+}
+
 void ScriptManager::destroy_script(ComponentID id)
 {
+	dirtyScripts.insert(id);
 }
 
 void ScriptManager::force_garbage_collect()
@@ -248,6 +279,30 @@ WrenForeignClassMethods ScriptManager::bind_foreign_class(WrenVM *, const char *
 	{
 		methods.allocate = vector3_allocate;
 		methods.finalize = vector3_finalize;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "Rigidbody") == 0)
+	{
+		methods.allocate = rigidbody_allocate;
+		methods.finalize = rigidbody_finalize;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "BoxCollider") == 0)
+	{
+		methods.allocate = box_collider_allocate;
+		methods.finalize = collider_finalize;
+	}
+	
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "SphereCollider") == 0)
+	{
+		methods.allocate = sphere_collider_allocate;
+		methods.finalize = collider_finalize;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "CapsuleCollider") == 0)
+	{
+		methods.allocate = capsule_collider_allocate;
+		methods.finalize = collider_finalize;
 	}
 
 	return methods;
@@ -312,6 +367,13 @@ WrenForeignMethodFn ScriptManager::bind_foreign_method(WrenVM *vm, const char *m
 
 		if (std::strcmp(signature, "get_script(_)") == 0)
 			return game_object_get_script;
+		if (std::strcmp(signature, "get_components_by_type(_)") == 0)
+			return game_object_get_components_by_type;
+
+		if (std::strcmp(signature, "attach_component(_)") == 0)
+			return game_object_attach_component;
+		if (std::strcmp(signature, "remove_component(_)") == 0)
+			return game_object_remove_component;
 	}
 
 	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "Scene") == 0 && isStatic)
@@ -365,6 +427,112 @@ WrenForeignMethodFn ScriptManager::bind_foreign_method(WrenVM *vm, const char *m
 			return vector3_scalar_multiply;
 	}
 
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "Rigidbody") == 0)
+	{
+		if (std::strcmp(signature, "friction") == 0)
+			return rigidbody_get_friction;
+		if (std::strcmp(signature, "friction=(_)") == 0)
+			return rigidbody_set_friction;
+
+		if (std::strcmp(signature, "restitution") == 0)
+			return rigidbody_get_restitution;
+		if (std::strcmp(signature, "restitution=(_)") == 0)
+			return rigidbody_set_restitution;
+
+		if (std::strcmp(signature, "mass") == 0)
+			return rigidbody_get_mass;
+		if (std::strcmp(signature, "mass=(_)") == 0)
+			return rigidbody_set_mass;
+
+		if (std::strcmp(signature, "gravityFactor") == 0)
+			return rigidbody_get_gravity_factor;
+		if (std::strcmp(signature, "gravityFactor=(_)") == 0)
+			return rigidbody_set_gravity_factor;
+
+		if (std::strcmp(signature, "isTrigger") == 0)
+			return rigidbody_get_is_trigger;
+		if (std::strcmp(signature, "isTrigger=(_)") == 0)
+			return rigidbody_set_is_trigger;
+
+		if (std::strcmp(signature, "linearVelocity") == 0)
+			return rigidbody_get_linear_velocity;
+		if (std::strcmp(signature, "linearVelocity=(_)") == 0)
+			return rigidbody_set_linear_velocity;
+
+		if (std::strcmp(signature, "angularVelocity") == 0)
+			return rigidbody_get_angular_velocity;
+		if (std::strcmp(signature, "angularVelocity=(_)") == 0)
+			return rigidbody_set_angular_velocity;
+
+		if (std::strcmp(signature, "add_force(_)") == 0)
+			return rigidbody_add_force;
+		if (std::strcmp(signature, "add_impulse(_)") == 0)
+			return rigidbody_add_impulse;
+		if (std::strcmp(signature, "add_angular_force(_)") == 0)
+			return rigidbody_add_angular_force;
+		if (std::strcmp(signature, "add_angular_impulse(_)") == 0)
+			return rigidbody_add_angular_impulse;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "BoxCollider") == 0)
+	{
+		if (std::strcmp(signature, "positionOffset") == 0)
+			return collider_get_position_offset;
+		if (std::strcmp(signature, "positionOffset=(_)") == 0)
+			return collider_set_position_offset;
+
+		if (std::strcmp(signature, "eulerDegreesOffset") == 0)
+			return collider_get_euler_offset;
+		if (std::strcmp(signature, "eulerDegreesOffset=(_)") == 0)
+			return collider_set_euler_offset;
+
+		if (std::strcmp(signature, "halfDimensions") == 0)
+			return box_collider_get_half_dimensions;
+		if (std::strcmp(signature, "halfDimensions=(_)") == 0)
+			return box_collider_set_half_dimensions;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "SphereCollider") == 0)
+	{
+		if (std::strcmp(signature, "positionOffset") == 0)
+			return collider_get_position_offset;
+		if (std::strcmp(signature, "positionOffset=(_)") == 0)
+			return collider_set_position_offset;
+
+		if (std::strcmp(signature, "eulerDegreesOffset") == 0)
+			return collider_get_euler_offset;
+		if (std::strcmp(signature, "eulerDegreesOffset=(_)") == 0)
+			return collider_set_euler_offset;
+
+		if (std::strcmp(signature, "radius") == 0)
+			return sphere_collider_get_radius;
+		if (std::strcmp(signature, "radius=(_)") == 0)
+			return sphere_collider_set_radius;
+	}
+
+	if (std::strcmp(module, "m3d") == 0 && std::strcmp(className, "CapsuleCollider") == 0)
+	{
+		if (std::strcmp(signature, "positionOffset") == 0)
+			return collider_get_position_offset;
+		if (std::strcmp(signature, "positionOffset=(_)") == 0)
+			return collider_set_position_offset;
+
+		if (std::strcmp(signature, "eulerDegreesOffset") == 0)
+			return collider_get_euler_offset;
+		if (std::strcmp(signature, "eulerDegreesOffset=(_)") == 0)
+			return collider_set_euler_offset;
+
+		if (std::strcmp(signature, "radius") == 0)
+			return capsule_collider_get_radius;
+		if (std::strcmp(signature, "radius=(_)") == 0)
+			return capsule_collider_set_radius;
+
+		if (std::strcmp(signature, "halfHeight") == 0)
+			return capsule_collider_get_half_height;
+		if (std::strcmp(signature, "halfHeight=(_)") == 0)
+			return capsule_collider_set_half_height;
+	}
+
 	return nullptr;
 }
 
@@ -415,29 +583,6 @@ void ScriptManager::game_object_get_name(WrenVM *vm)
 	wrenSetSlotString(vm, 0, name.c_str());
 }
 
-void ScriptManager::game_object_get_script(WrenVM *vm)
-{
-	auto* ref = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
-	const char* moduleName = wrenGetSlotString(vm, 1);
-
-	ScriptBinding* binding = nullptr;
-	std::set<ComponentID> components = ECS::instance->get_all_components_of_type(ref->entityID, typeid(ScriptComponent));
-	for (const auto& id : components)
-	{
-		auto it = ScriptManager::instance->scripts.find(id);
-		if (it != ScriptManager::instance->scripts.end() && it->second.moduleName == moduleName)
-			binding = &(it->second);
-	}
-
-	if (!binding || binding->scriptHandle == nullptr)
-	{
-		wrenSetSlotNull(vm, 0);
-		return;
-	}
-	
-	wrenSetSlotHandle(vm, 0, binding->scriptHandle);
-}
-
 void ScriptManager::gameobject_get_local_position(WrenVM *vm)
 {
 	auto* ref = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
@@ -467,7 +612,7 @@ void ScriptManager::gameobject_get_local_euler_degrees(WrenVM *vm)
 
 	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
 
-	new (value) Vector3Data(ECS::instance->get_entity_local_rot(ref->entityID));
+	new (value) Vector3Data(ECS::instance->get_entity_local_eurler_degrees(ref->entityID));
 }
 
 void ScriptManager::game_object_set_local_euler_degrees(WrenVM *vm)
@@ -529,6 +674,268 @@ void ScriptManager::game_object_get_local_up(WrenVM *vm)
 
 	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
 	new (value) Vector3Data(ECS::instance->get_entity_local_up(ref->entityID));
+}
+
+void ScriptManager::game_object_get_script(WrenVM *vm)
+{
+	auto* ref = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
+	const char* moduleName = wrenGetSlotString(vm, 1);
+
+	ScriptBinding* binding = nullptr;
+	std::set<ComponentID> components = ECS::instance->get_all_component_ids_of_type(ref->entityID, ComponentType::SCRIPT);
+	for (const auto& id : components)
+	{
+		auto it = ScriptManager::instance->scripts.find(id);
+		if (it != ScriptManager::instance->scripts.end() && it->second.moduleName == moduleName)
+			binding = &(it->second);
+	}
+
+	if (!binding || binding->scriptHandle == nullptr)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	wrenSetSlotHandle(vm, 0, binding->scriptHandle);
+}
+
+void ScriptManager::game_object_get_components_by_type(WrenVM *vm)
+{
+	auto* ref = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
+	int typeEnum = std::rint(wrenGetSlotDouble(vm, 1));
+
+	const char* wrenClassName = nullptr;
+	ComponentType type;
+	ColliderType colType;
+
+	switch (typeEnum)
+	{
+		case 0: // RIGIDBODY
+			wrenClassName = "Rigidbody";
+			type = ComponentType::RIGID_BODY;
+			break;
+		
+		case 1: // BOX_COLLIDER
+			wrenClassName = "BoxCollider";
+			type = ComponentType::COLLIDER;
+			colType = ColliderType::BOX;
+			break;
+
+		case 2: // SPHERE_COLLIDER
+			wrenClassName = "SphereCollider";
+			type = ComponentType::COLLIDER;
+			colType = ColliderType::SPHERE;
+			break;
+
+		case 3: // CAPSULE_COLLIDER
+			wrenClassName = "CapsuleCollider";
+			type = ComponentType::COLLIDER;
+			colType = ColliderType::CAPSULE;
+			break;
+
+		default:
+			wrenEnsureSlots(vm, 1);
+			wrenSetSlotNewList(vm, 0);
+			return;
+	}
+
+	if (!wrenClassName)
+	{
+		wrenEnsureSlots(vm, 1);
+		wrenSetSlotNewList(vm, 0);
+		return;
+	}
+
+	std::set<ComponentID> components = ECS::instance->get_all_component_ids_of_type(ref->entityID, type);
+
+	wrenEnsureSlots(vm, 4);
+	wrenSetSlotNewList(vm, 0);
+	wrenGetVariable(vm, "m3d", wrenClassName, 1);
+
+	for (const auto& id : components)
+	{
+		switch (type)
+		{
+			case ComponentType::RIGID_BODY:
+			{
+				auto* data = static_cast<RigidbodyData*>(wrenSetSlotNewForeign(vm, 2, 1, sizeof(RigidbodyData)));
+				
+				new (data) RigidbodyData{};
+				data->header.componentID = id;
+				data->header.type = ComponentType::RIGID_BODY;
+
+				wrenInsertInList(vm, 0, -1, 2);
+				break;
+			}
+
+			case ComponentType::COLLIDER:
+			{
+				if (!ECS::instance->is_component_valid(id))
+					break;
+				
+				auto& collider = dynamic_cast<Collider&>(ECS::instance->get_component_reference(id));
+				if (collider.get_collider_type() != colType)
+					break;
+
+				switch (colType)
+				{
+					case ColliderType::BOX:
+					{
+						auto* data = static_cast<BoxColliderData*>(wrenSetSlotNewForeign(vm, 2, 1, sizeof(BoxColliderData)));
+				
+						new (data) BoxColliderData{};
+						data->header.componentID = id;
+						data->header.type = ComponentType::COLLIDER;
+						data->colliderType = ColliderType::BOX;
+						
+						wrenInsertInList(vm, 0, -1, 2);
+						break;
+					}
+					
+					case ColliderType::SPHERE:
+					{
+						auto* data = static_cast<SphereColliderData*>(wrenSetSlotNewForeign(vm, 2, 1, sizeof(SphereColliderData)));
+				
+						new (data) SphereColliderData{};
+						data->header.componentID = id;
+						data->header.type = ComponentType::COLLIDER;
+						data->colliderType = ColliderType::SPHERE;
+						
+						wrenInsertInList(vm, 0, -1, 2);
+						break;
+					}
+
+					case ColliderType::CAPSULE:
+					{
+						auto* data = static_cast<CapsuleColliderData*>(wrenSetSlotNewForeign(vm, 2, 1, sizeof(CapsuleColliderData)));
+				
+						new (data) CapsuleColliderData{};
+						data->header.componentID = id;
+						data->header.type = ComponentType::COLLIDER;
+						data->colliderType = ColliderType::CAPSULE;
+
+						wrenInsertInList(vm, 0, -1, 2);
+						break;
+					}
+				}
+				break;	
+			}
+		}
+	}
+}
+
+void ScriptManager::game_object_attach_component(WrenVM *vm)
+{
+	auto* obj = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
+	auto* header = static_cast<ComponentHeader*>(wrenGetSlotForeign(vm, 1));
+
+	if (header->componentID.isValid() || ECS::instance->is_component_valid(header->componentID))
+	{
+		wrenSetSlotBool(vm, 0, false);
+		return;
+	}
+
+	ComponentID id;
+
+	switch (header->type)
+	{
+		case ComponentType::RIGID_BODY:
+		{
+			auto* data = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 1));
+			auto rb = std::make_unique<RigidBody>();
+
+			BodyDesc desc;
+			desc.friction = data->friction;
+			desc.gravityFactor = data->gravityFactor;
+			desc.mass = data->mass;
+			desc.isSensor = data->isSensor;
+			desc.restitution = data->restitution;
+
+			rb->set_body_desc(desc);
+			id = ECS::instance->attach_component(obj->entityID, std::move(rb));
+			break;
+		}
+
+		case ComponentType::COLLIDER:
+		{
+			auto* data = static_cast<ColliderData*>(wrenGetSlotForeign(vm, 1));
+			switch (data->colliderType)
+			{
+				case ColliderType::BOX:
+				{
+					auto* boxData = static_cast<BoxColliderData*>(data);
+					auto boxCollider = std::make_unique<BoxCollider>();
+
+					boxCollider->set_position_offset(boxData->positionOffset);
+					boxCollider->set_euler_degree_offset(boxData->eulerDegreeOffset);
+					boxCollider->set_half_dimensions(boxData->halfDimensions);
+
+					id = ECS::instance->attach_component(obj->entityID, std::move(boxCollider));
+					break;
+				}
+
+				case ColliderType::SPHERE:
+				{
+					auto* sphereData = static_cast<SphereColliderData*>(data);
+					auto sphereCollider = std::make_unique<SphereCollider>();
+
+					sphereCollider->set_position_offset(sphereData->positionOffset);
+					sphereCollider->set_euler_degree_offset(sphereData->eulerDegreeOffset);
+					sphereCollider->set_radius(sphereData->radius);
+
+					id = ECS::instance->attach_component(obj->entityID, std::move(sphereCollider));
+					break;
+				}
+
+				case ColliderType::CAPSULE:
+				{
+					auto* capsuleData = static_cast<CapsuleColliderData*>(data);
+					auto capsuleCollider = std::make_unique<CapsuleCollider>();
+
+					capsuleCollider->set_position_offset(capsuleData->positionOffset);
+					capsuleCollider->set_euler_degree_offset(capsuleData->eulerDegreeOffset);
+					capsuleCollider->set_radius(capsuleData->radius);
+					capsuleCollider->set_half_height(capsuleData->halfHeight);
+
+					id = ECS::instance->attach_component(obj->entityID, std::move(capsuleCollider));
+					break;
+				}
+			}
+			break;
+		}
+	}
+
+	if (!id.isValid())
+	{
+		wrenSetSlotBool(vm, 0, false);
+		return;
+	}
+
+	header->componentID = id;
+	wrenSetSlotBool(vm, 0, true);
+}
+
+void ScriptManager::game_object_remove_component(WrenVM *vm)
+{
+	auto* obj = static_cast<GameObjectData*>(wrenGetSlotForeign(vm, 0));
+	auto* header = static_cast<ComponentHeader*>(wrenGetSlotForeign(vm, 1));
+
+	if (!header->componentID.isValid() || !ECS::instance->is_component_valid(header->componentID))
+	{
+		wrenSetSlotBool(vm, 0, false);
+		return;
+	}
+
+	EntityID attachedEntity = ECS::instance->get_attached_entity(header->componentID);
+	if (!attachedEntity.isValid() || attachedEntity != obj->entityID)
+	{
+		wrenSetSlotBool(vm, 0, false);
+		return;
+	}
+
+	ECS::instance->remove_component(attachedEntity, header->componentID);
+	header->componentID = xg::Guid();
+	wrenSetSlotBool(vm, 0, true);
 }
 #pragma endregion
 
@@ -735,6 +1142,830 @@ void ScriptManager::vector3_scalar_multiply(WrenVM *vm)
 
 	auto* res = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
 	new (res) Vector3Data(ref->x * scalar, ref->y * scalar, ref->z * scalar);
+}
+#pragma endregion
+
+#pragma region RIGIDBODY_BINDINGS
+void ScriptManager::rigidbody_allocate(WrenVM *vm)
+{
+	auto* data = static_cast<RigidbodyData*>(wrenSetSlotNewForeign(vm, 0, 0, sizeof(RigidbodyData)));
+
+	new (data) RigidbodyData{};
+	data->header.type = ComponentType::RIGID_BODY;
+	data->header.componentID = {};
+}
+
+void ScriptManager::rigidbody_finalize(void *data)
+{
+
+}
+
+void ScriptManager::rigidbody_get_motion_type(WrenVM *vm)
+{
+
+}
+
+void ScriptManager::rigidbody_set_motion_type(WrenVM *vm)
+{
+	
+}
+
+void ScriptManager::rigidbody_get_friction(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->friction);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, rb.get_friction());
+}
+
+void ScriptManager::rigidbody_set_friction(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->friction = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_friction(value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_restitution(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->restitution);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, rb.get_restitution());
+}
+
+void ScriptManager::rigidbody_set_restitution(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->restitution = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_restitution(value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_mass(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->mass);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, rb.get_mass());
+}
+
+void ScriptManager::rigidbody_set_mass(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->mass = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_mass(value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_gravity_factor(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->gravityFactor);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, rb.get_gravity_factor());
+}
+
+void ScriptManager::rigidbody_set_gravity_factor(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->gravityFactor = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_gravity_factor(value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_is_trigger(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotBool(vm, 0, ref->isSensor);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotBool(vm, 0, rb.get_is_sensor());
+}
+
+void ScriptManager::rigidbody_set_is_trigger(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	bool value = wrenGetSlotBool(vm, 1);
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->isSensor = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_is_sensor(value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_linear_velocity(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	wrenEnsureSlots(vm, 2);
+	wrenGetVariable(vm, "m3d", "Vector3", 1);
+	
+	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+	new (value) Vector3Data();
+
+	if (!ref->header.componentID.isValid())
+	{
+		value->x = 0.0f;
+		value->y = 0.0f;
+		value->z = 0.0f;
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		value->x = 0.0f;
+		value->y = 0.0f;
+		value->z = 0.0f;
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	glm::vec3 v = rb.get_linear_velocity();
+	value->x = v.x;
+	value->y = v.y;
+	value->z = v.z;
+}
+
+void ScriptManager::rigidbody_set_linear_velocity(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_linear_velocity(*value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_get_angular_velocity(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+
+	wrenEnsureSlots(vm, 2);
+	wrenGetVariable(vm, "m3d", "Vector3", 1);
+	
+	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+	new (value) Vector3Data();
+
+	if (!ref->header.componentID.isValid())
+	{
+		value->x = 0.0f;
+		value->y = 0.0f;
+		value->z = 0.0f;
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		value->x = 0.0f;
+		value->y = 0.0f;
+		value->z = 0.0f;
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	glm::vec3 v = rb.get_angular_velocity();
+	value->x = v.x;
+	value->y = v.y;
+	value->z = v.z;
+}
+
+void ScriptManager::rigidbody_set_angular_velocity(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.set_angular_velocity(*value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_add_force(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.add_force(*value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_add_impulse(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.add_impulse(*value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_add_angular_force(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.add_angular_force(*value);
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::rigidbody_add_angular_impulse(WrenVM *vm)
+{
+	auto* ref = static_cast<RigidbodyData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& rb = dynamic_cast<RigidBody&>(ECS::instance->get_component_reference(ref->header.componentID));
+	rb.add_angular_impulse(*value);
+	wrenSetSlotNull(vm, 0);
+}
+#pragma endregion
+
+#pragma region COLLIDER_BINDINGS
+void ScriptManager::collider_finalize(void *data)
+{
+
+}
+
+void ScriptManager::collider_set_position_offset(WrenVM *vm)
+{
+	auto* ref = static_cast<ColliderData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->positionOffset = *value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<Collider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_position_offset(*value);	
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::collider_get_position_offset(WrenVM *vm)
+{
+	auto* ref = static_cast<ColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenEnsureSlots(vm, 2);
+		wrenGetVariable(vm, "m3d", "Vector3", 1);
+		auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+		new (value) Vector3Data();
+		value->x = ref->positionOffset.x;
+		value->y = ref->positionOffset.y;
+		value->z = ref->positionOffset.z;
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	wrenEnsureSlots(vm, 2);
+	wrenGetVariable(vm, "m3d", "Vector3", 1);
+	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+	new (value) Vector3Data();
+	
+	auto& collider = dynamic_cast<Collider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	glm::vec3 v = collider.get_position_offset();
+	value->x = v.x;
+	value->y = v.y;
+	value->z = v.z;
+}
+
+void ScriptManager::collider_set_euler_offset(WrenVM *vm)
+{
+	auto* ref = static_cast<ColliderData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->eulerDegreeOffset = *value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<Collider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_euler_degree_offset(*value);	
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::collider_get_euler_offset(WrenVM *vm)
+{
+	auto* ref = static_cast<ColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenEnsureSlots(vm, 2);
+		wrenGetVariable(vm, "m3d", "Vector3", 1);
+		auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+		new (value) Vector3Data();
+		value->x = ref->eulerDegreeOffset.x;
+		value->y = ref->eulerDegreeOffset.y;
+		value->z = ref->eulerDegreeOffset.z;
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	wrenEnsureSlots(vm, 2);
+	wrenGetVariable(vm, "m3d", "Vector3", 1);
+	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+	new (value) Vector3Data();
+
+	auto& collider = dynamic_cast<Collider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	glm::vec3 v = collider.get_euler_degree_offset();
+	value->x = v.x;
+	value->y = v.y;
+	value->z = v.z;
+}
+
+void ScriptManager::box_collider_allocate(WrenVM *vm)
+{
+	auto* data = static_cast<BoxColliderData*>(wrenSetSlotNewForeign(vm, 0, 0, sizeof(BoxColliderData)));
+
+	new (data) BoxColliderData{};
+	data->header.type = ComponentType::COLLIDER;
+	data->header.componentID = {};
+	data->colliderType = ColliderType::BOX;
+}
+
+void ScriptManager::box_collider_get_half_dimensions(WrenVM *vm)
+{
+	auto* ref = static_cast<BoxColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (ref->colliderType != ColliderType::BOX)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenEnsureSlots(vm, 2);
+		wrenGetVariable(vm, "m3d", "Vector3", 1);
+		auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+		new (value) Vector3Data();
+		value->x = ref->halfDimensions.x;
+		value->y = ref->halfDimensions.y;
+		value->z = ref->halfDimensions.z;
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	wrenEnsureSlots(vm, 2);
+	wrenGetVariable(vm, "m3d", "Vector3", 1);
+	auto* value = static_cast<Vector3Data*>(wrenSetSlotNewForeign(vm, 0, 1, sizeof(Vector3Data)));
+	new (value) Vector3Data();
+
+	auto& collider = dynamic_cast<BoxCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	glm::vec3 v = collider.get_half_dimensions();
+	value->x = v.x;
+	value->y = v.y;
+	value->z = v.z;
+}
+
+void ScriptManager::box_collider_set_half_dimensions(WrenVM *vm)
+{
+	auto* ref = static_cast<BoxColliderData*>(wrenGetSlotForeign(vm, 0));
+	auto* value = static_cast<Vector3Data*>(wrenGetSlotForeign(vm, 1));
+
+	if (ref->colliderType != ColliderType::BOX)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->halfDimensions = *value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<BoxCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_half_dimensions(*value);	
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::sphere_collider_allocate(WrenVM *vm)
+{
+	auto* data = static_cast<SphereColliderData*>(wrenSetSlotNewForeign(vm, 0, 0, sizeof(SphereColliderData)));
+
+	new (data) SphereColliderData{};
+	data->header.type = ComponentType::COLLIDER;
+	data->header.componentID = {};
+	data->colliderType = ColliderType::SPHERE;
+}
+
+void ScriptManager::sphere_collider_get_radius(WrenVM *vm)
+{
+	auto* ref = static_cast<SphereColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (ref->colliderType != ColliderType::SPHERE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->radius);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<SphereCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, collider.get_radius());
+}
+
+void ScriptManager::sphere_collider_set_radius(WrenVM *vm)
+{
+	auto* ref = static_cast<SphereColliderData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (ref->colliderType != ColliderType::SPHERE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->radius = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<SphereCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_radius(value);	
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::capsule_collider_allocate(WrenVM *vm)
+{
+	auto* data = static_cast<CapsuleColliderData*>(wrenSetSlotNewForeign(vm, 0, 0, sizeof(CapsuleColliderData)));
+
+	new (data) CapsuleColliderData{};
+	data->header.type = ComponentType::COLLIDER;
+	data->header.componentID = {};
+	data->colliderType = ColliderType::CAPSULE;
+}
+
+void ScriptManager::capsule_collider_get_half_height(WrenVM *vm)
+{
+	auto* ref = static_cast<CapsuleColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (ref->colliderType != ColliderType::CAPSULE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->halfHeight);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<CapsuleCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, collider.get_half_height());
+}
+
+void ScriptManager::capsule_collider_set_half_height(WrenVM *vm)
+{
+	auto* ref = static_cast<CapsuleColliderData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (ref->colliderType != ColliderType::CAPSULE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->halfHeight = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<CapsuleCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_half_height(value);	
+	wrenSetSlotNull(vm, 0);
+}
+
+void ScriptManager::capsule_collider_get_radius(WrenVM *vm)
+{
+	auto* ref = static_cast<CapsuleColliderData*>(wrenGetSlotForeign(vm, 0));
+
+	if (ref->colliderType != ColliderType::CAPSULE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		wrenSetSlotDouble(vm, 0, ref->radius);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<CapsuleCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	wrenSetSlotDouble(vm, 0, collider.get_radius());
+}
+
+void ScriptManager::capsule_collider_set_radius(WrenVM *vm)
+{
+	auto* ref = static_cast<CapsuleColliderData*>(wrenGetSlotForeign(vm, 0));
+	float value = wrenGetSlotDouble(vm, 1);
+
+	if (ref->colliderType != ColliderType::CAPSULE)
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	if (!ref->header.componentID.isValid())
+	{
+		ref->radius = value;
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+	
+	if (!ECS::instance->is_component_valid(ref->header.componentID))
+	{
+		wrenSetSlotNull(vm, 0);
+		return;
+	}
+
+	auto& collider = dynamic_cast<CapsuleCollider&>(ECS::instance->get_component_reference(ref->header.componentID));
+	collider.set_radius(value);	
+	wrenSetSlotNull(vm, 0);
 }
 #pragma endregion
 

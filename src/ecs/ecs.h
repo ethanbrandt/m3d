@@ -9,6 +9,7 @@
 #include <typeinfo>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <crossguid/guid.hpp>
 #include "ecs_component.h"
 
@@ -17,6 +18,7 @@ using EntityID = xg::Guid;
 struct Transform
 {
 	glm::vec3 localPosition = glm::vec3(0.0f);
+	glm::quat localRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 	glm::vec3 localEulerDegrees = glm::vec3(0.0f);
 	glm::vec3 localScale = glm::vec3(1.0f);
 
@@ -53,7 +55,7 @@ private:
 		~EntityRecord()
 		{
 			for (auto& [componentID, component] : components)
-				component->on_destroy(id);
+				component->on_destroy();
 		}
 	};
 
@@ -65,8 +67,8 @@ private:
 	void update_world_recursive(EntityID entityID, bool parentDirty);
 	void mark_transform_subtree_dirty(EntityID entityID);
 
-	glm::mat4 compose_transform(const glm::vec3& pos, const glm::vec3& eulerDeg, const glm::vec3& scale);
-	bool decompose_transform(const glm::mat4& matrix, glm::vec3& outPos, glm::vec3& outEulerDeg, glm::vec3& outScale);
+	glm::mat4 compose_transform(const glm::vec3& pos, const glm::quat& rot, const glm::vec3& scale);
+	bool decompose_transform(const glm::mat4& matrix, glm::vec3& outPos, glm::quat& outQuat, glm::vec3& outScale);
 
 public:
 	static ECS* instance;
@@ -87,19 +89,26 @@ public:
 	EntityID get_parent_entity(EntityID entity);
 	std::unordered_set<EntityID> get_children_entities(EntityID entity);
 
-	std::set<ComponentID> get_all_components_of_type(EntityID entityID, const std::type_info& type) const;
+	std::set<ComponentID> get_all_component_ids_of_type(EntityID entityID, ComponentType type) const;
+
+	bool is_component_valid(ComponentID id);
+	Component& get_component_reference(ComponentID componentID);
 
 	EntityID get_entity_by_name(std::string name) const;
 
 	std::string get_entity_name(EntityID entityID);
 
 	void set_entity_world_pos(EntityID entityID, glm::vec3 pos);
+	void set_entity_world_rot(EntityID entityID, glm::quat rot);
+
 	void set_entity_local_pos(EntityID entityID, glm::vec3 pos);
 	void set_entity_local_rot(EntityID entityID, glm::vec3 eulerDegrees);
+	void set_entity_local_rot(EntityID entityID, glm::quat rot);
 	void set_entity_local_scale(EntityID entityID, glm::vec3 scale);
 
 	glm::vec3 get_entity_local_pos(EntityID entityID);
-	glm::vec3 get_entity_local_rot(EntityID entityID);
+	glm::quat get_entity_local_rot(EntityID entityID);
+	glm::vec3 get_entity_local_eurler_degrees(EntityID entityID);
 	glm::vec3 get_entity_local_scale(EntityID entityID);
 
 	glm::vec3 get_entity_local_forward(EntityID entityID);

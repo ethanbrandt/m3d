@@ -8,8 +8,8 @@
 #include <glm/glm.hpp>
 #include <wren.hpp>
 
-using ComponentID = xg::Guid;
-using EntityID = xg::Guid;
+#include "ecs/ecs_component.h"
+#include "physics/physics.h"
 
 class ScriptManager
 {
@@ -81,8 +81,51 @@ private:
 		}
 	};
 
+	struct ComponentHeader
+	{
+		ComponentType type;
+		ComponentID componentID;
+	};
+
+	struct RigidbodyData
+	{
+		ComponentHeader header;
+
+		int motionType = 2;
+		float friction = 0.8f;
+		float restitution = 0.0f;
+		float mass = 1.0f;
+		float gravityFactor = 1.0f;
+		bool isSensor = false;
+	};
+
+	struct ColliderData
+	{
+		ComponentHeader header;
+		ColliderType colliderType;
+		glm::vec3 positionOffset = glm::vec3(0.0f);
+		glm::vec3 eulerDegreeOffset = glm::vec3(0.0f);
+	};
+
+	struct BoxColliderData : ColliderData
+	{
+		glm::vec3 halfDimensions = glm::vec3(0.5f, 0.5f, 0.5f);
+	};
+
+	struct SphereColliderData : ColliderData
+	{
+		float radius = 0.5f;
+	};
+
+	struct CapsuleColliderData : ColliderData
+	{
+		float radius = 0.5f;
+		float halfHeight = 0.5f;
+	};
+
 	std::unordered_map<ComponentID, ScriptBinding> scripts;
 	std::unordered_map<std::string, WrenHandle*> scriptClasses;
+	std::set<ComponentID> dirtyScripts;
 
 	WrenConfiguration config;
 	WrenVM* vm;
@@ -108,7 +151,6 @@ private:
 	static void game_object_get_id(WrenVM* vm);
 	static void game_object_get_parent(WrenVM* vm);
 	static void game_object_get_name(WrenVM* vm);
-	static void game_object_get_script(WrenVM* vm);
 	static void gameobject_get_local_position(WrenVM* vm);
 	static void game_object_set_local_position(WrenVM* vm);
 	static void gameobject_get_local_euler_degrees(WrenVM* vm);
@@ -118,6 +160,10 @@ private:
 	static void game_object_get_local_forward(WrenVM* vm);
 	static void game_object_get_local_right(WrenVM* vm);
 	static void game_object_get_local_up(WrenVM* vm);
+	static void game_object_get_script(WrenVM* vm);
+	static void game_object_get_components_by_type(WrenVM* vm);
+	static void game_object_attach_component(WrenVM* vm);
+	static void game_object_remove_component(WrenVM* vm);
 
 	static void scene_find_object_by_name(WrenVM* vm);
 
@@ -143,6 +189,49 @@ private:
 	static void vector3_sub(WrenVM* vm);
 	static void vector3_scalar_multiply(WrenVM* vm);
 
+	static void rigidbody_allocate(WrenVM* vm);
+	static void rigidbody_finalize(void* data);
+	static void rigidbody_get_motion_type(WrenVM* vm); // TODO
+	static void rigidbody_set_motion_type(WrenVM* vm); // TODO
+	static void rigidbody_get_friction(WrenVM* vm);
+	static void rigidbody_set_friction(WrenVM* vm);
+	static void rigidbody_get_restitution(WrenVM* vm);
+	static void rigidbody_set_restitution(WrenVM* vm);
+	static void rigidbody_get_mass(WrenVM* vm);
+	static void rigidbody_set_mass(WrenVM* vm);
+	static void rigidbody_get_gravity_factor(WrenVM* vm);
+	static void rigidbody_set_gravity_factor(WrenVM* vm);
+	static void rigidbody_get_is_trigger(WrenVM* vm);
+	static void rigidbody_set_is_trigger(WrenVM* vm);
+	static void rigidbody_get_linear_velocity(WrenVM* vm);
+	static void rigidbody_set_linear_velocity(WrenVM* vm);
+	static void rigidbody_get_angular_velocity(WrenVM* vm);
+	static void rigidbody_set_angular_velocity(WrenVM* vm);
+	static void rigidbody_add_force(WrenVM* vm);
+	static void rigidbody_add_impulse(WrenVM* vm);
+	static void rigidbody_add_angular_force(WrenVM* vm);
+	static void rigidbody_add_angular_impulse(WrenVM* vm);
+
+	static void collider_finalize(void* data);
+	static void collider_set_position_offset(WrenVM* vm);
+	static void collider_get_position_offset(WrenVM* vm);
+	static void collider_set_euler_offset(WrenVM* vm);
+	static void collider_get_euler_offset(WrenVM* vm);
+
+	static void box_collider_allocate(WrenVM* vm);
+	static void box_collider_get_half_dimensions(WrenVM* vm);
+	static void box_collider_set_half_dimensions(WrenVM* vm);
+
+	static void sphere_collider_allocate(WrenVM* vm);
+	static void sphere_collider_get_radius(WrenVM* vm);
+	static void sphere_collider_set_radius(WrenVM* vm);
+
+	static void capsule_collider_allocate(WrenVM* vm);
+	static void capsule_collider_get_half_height(WrenVM* vm);
+	static void capsule_collider_set_half_height(WrenVM* vm);
+	static void capsule_collider_get_radius(WrenVM* vm);
+	static void capsule_collider_set_radius(WrenVM* vm);
+
 	static void input_is_key_pressed(WrenVM* vm);
 	static void input_was_key_pressed_down(WrenVM* vm);
 	static void input_was_key_released(WrenVM* vm);
@@ -162,11 +251,12 @@ public:
 	~ScriptManager();
 
 	void register_script(EntityID entityID, ComponentID componentID, std::string scriptFilePath); //TODO
-	void remove_script(ComponentID id); //TODO
+	void remove_dirty_scripts();
 
 	void start_script(ComponentID id);
 	void update_script(ComponentID id, float deltaTime);
-	void destroy_script(ComponentID id);
+	void update_all_scripts(float deltaTime);
+	void destroy_script(ComponentID id); //TODO
 
 	void force_garbage_collect();
 };

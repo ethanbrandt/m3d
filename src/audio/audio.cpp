@@ -76,7 +76,7 @@ SoundID Audio::load_wav(std::string wavPath)
 
 	if (!stream)
 	{
-		std::cout << "Error: No audio stream (Audio not initialized)\n";
+		std::cout << "[Audio Error] No audio stream (Audio not initialized)\n";
 		return xg::Guid();
 	}
 
@@ -85,7 +85,7 @@ SoundID Audio::load_wav(std::string wavPath)
 	uint32_t srcLen = 0;
 	if (!SDL_LoadWAV(wavPath.c_str(), &srcSpec, &srcData, &srcLen))
 	{
-		std::cout << "SDL Error: " << SDL_GetError() << '\n';
+		std::cout << "[SDL Error] " << SDL_GetError() << '\n';
 		return xg::Guid();
 	}
 	
@@ -101,7 +101,7 @@ SoundID Audio::load_wav(std::string wavPath)
 
 	if (!converted)
 	{
-		std::cout << "SDL Error: " << SDL_GetError() << '\n';
+		std::cout << "[SDL Error] " << SDL_GetError() << '\n';
 		return xg::Guid();
 	}
 	
@@ -135,7 +135,7 @@ SourceID Audio::create_source(SoundID soundID, bool isLooping)
 {
 	if (!check_valid_sound(soundID))
 	{
-		std::cout << "Error: Invalid sound id\n";
+		std::cout << "[Audio Error] Invalid sound id\n";
 		return xg::Guid();
 	}
 	
@@ -339,7 +339,23 @@ void Audio::mix_into_stream(int numBytes)
 
 	if (sounds.size() == 0 || sources.size() == 0)
 	{
-		(void)SDL_PutAudioStreamData(stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));
+		SDL_PutAudioStreamData(stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));
+		return;
+	}
+
+	bool isCamValid = true;
+	if (Camera::instance == nullptr)
+		isCamValid = false;
+
+	if (isCamValid && !Camera::instance->get_entity_id().isValid())
+		isCamValid = false;
+
+	if (isCamValid && !ECS::instance->is_entity_valid(Camera::instance->get_entity_id()))
+		isCamValid = false;
+
+	if (!isCamValid)
+	{
+		SDL_PutAudioStreamData(stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));
 		return;
 	}
 
@@ -410,8 +426,9 @@ void Audio::mix_into_stream(int numBytes)
 	for (float& sample : mix)
 		sample = glm::clamp(sample, -1.0f, 1.0f);
 
-	bool x = SDL_PutAudioStreamData(stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));	
-
+	bool x = SDL_PutAudioStreamData(stream, mix.data(), static_cast<int>(mix.size() * sizeof(float)));
+	if (!x)
+		std::cout << "[SDL Error] " << SDL_GetError() << '\n';
 }
 
 bool Audio::check_valid_source(SourceID sourceID)

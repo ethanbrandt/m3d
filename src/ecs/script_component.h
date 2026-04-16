@@ -12,9 +12,9 @@ public:
 	ScriptComponent();
 	~ScriptComponent() override;
 
-	void start(EntityID entityID) override;
-	void update(EntityID entityID, float deltaTime) override;
-	void on_destroy(EntityID entityID) override;
+	void start() override;
+	void update(float deltaTime) override;
+	void on_destroy() override;
 
 	void set_module_name(std::string _moduleName);
 	std::string get_module_name() const;

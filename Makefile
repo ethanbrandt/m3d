@@ -1,4 +1,4 @@
-.PHONY: all app tests runtime clean
+.PHONY: all app tests runtime clean clean-app
 
 SHELL := cmd.exe
 .SHELLFLAGS := /C
@@ -7,14 +7,18 @@ PROJECT := m3d
 BUILD_DIR := build
 APP_BIN := $(BUILD_DIR)/$(PROJECT).exe
 TEST_BIN := $(BUILD_DIR)/m3d_tests.exe
+JOLT_LIB := $(BUILD_DIR)/libjolt.a
 
 CC ?= gcc
 CXX ?= g++
+AR ?= ar
+ARFLAGS := rcs
 SDL_ROOT ?= SDL3-3.2.22/x86_64-w64-mingw32
 ASSIMP_ROOT ?= assimp
 UCRT_BIN ?= C:/msys64/ucrt64/bin
 
 CPPFLAGS += -DGUID_WINDOWS \
+	-I. \
 	-Iinclude \
 	-Isrc \
 	-Isrc/audio \
@@ -30,6 +34,7 @@ LDLIBS += -lSDL3 -lassimp -lz -lole32
 rwildcard = $(foreach d,$(wildcard $(1)/*),$(call rwildcard,$(d),$(2)) $(filter $(subst *,%,$(2)),$(d)))
 
 APP_CPP_SOURCES := $(call rwildcard,src,*.cpp)
+JOLT_CPP_SOURCES := $(call rwildcard,Jolt,*.cpp)
 APP_C_SOURCES := $(call rwildcard,src,*.c)
 TEST_SUPPORT_SOURCES := \
 	src/guid.cpp \
@@ -45,9 +50,11 @@ TEST_SOURCES := $(wildcard tests/*.cpp)
 WREN_SOURCES := $(wildcard wren-0.4.0/src/vm/*.c)
 RUNTIME_DLLS := \
 	$(BUILD_DIR)/SDL3.dll
-GENERATED_FILES := $(APP_BIN) $(TEST_BIN) $(RUNTIME_DLLS)
+GENERATED_FILES := $(APP_BIN) $(TEST_BIN) $(JOLT_LIB) $(RUNTIME_DLLS)
+APP_GENERATED_FILES := $(APP_BIN) $(TEST_BIN)
 
 APP_CPP_OBJECTS := $(patsubst src/%.cpp,$(BUILD_DIR)/obj/app/cpp/%.o,$(APP_CPP_SOURCES))
+JOLT_CPP_OBJECTS := $(patsubst Jolt/%.cpp,$(BUILD_DIR)/obj/jolt/%.o,$(JOLT_CPP_SOURCES))
 APP_C_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/obj/app/c/%.o,$(APP_C_SOURCES))
 STB_IMAGE_OBJECT := $(BUILD_DIR)/obj/app/cpp/stb_image_impl.o
 APP_OBJECTS := $(APP_CPP_OBJECTS) $(APP_C_OBJECTS) $(STB_IMAGE_OBJECT)
@@ -56,6 +63,7 @@ TEST_OBJECTS := $(patsubst tests/%.cpp,$(BUILD_DIR)/obj/tests/%.o,$(TEST_SOURCES
 WREN_OBJECTS := $(patsubst wren-0.4.0/src/vm/%.c,$(BUILD_DIR)/obj/wren/%.o,$(WREN_SOURCES))
 
 APP_CPP_DEPS := $(APP_CPP_OBJECTS:.o=.d)
+JOLT_CPP_DEPS := $(JOLT_CPP_OBJECTS:.o=.d)
 APP_C_DEPS := $(APP_C_OBJECTS:.o=.d)
 STB_IMAGE_DEPS := $(STB_IMAGE_OBJECT:.o=.d)
 TEST_SUPPORT_DEPS := $(TEST_SUPPORT_OBJECTS:.o=.d)
@@ -68,7 +76,11 @@ app: $(APP_BIN) runtime
 
 tests: $(TEST_BIN) runtime
 
-$(APP_BIN): $(APP_OBJECTS) $(WREN_OBJECTS)
+$(JOLT_LIB): $(JOLT_CPP_OBJECTS)
+	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
+	$(AR) $(ARFLAGS) $@ $^
+
+$(APP_BIN): $(APP_OBJECTS) $(JOLT_LIB) $(WREN_OBJECTS)
 	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
 	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -83,6 +95,10 @@ $(BUILD_DIR)/obj/app/cpp/%.o: src/%.cpp
 $(BUILD_DIR)/obj/app/c/%.o: src/%.c
 	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/obj/jolt/%.o: Jolt/%.cpp
+	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(STB_IMAGE_OBJECT): include/stb_image.h
 	@if not exist "$(subst /,\,$(dir $@))" mkdir "$(subst /,\,$(dir $@))"
@@ -110,4 +126,11 @@ clean:
 	@if exist "$(subst /,\,$(BUILD_DIR)/obj)" rmdir /S /Q "$(subst /,\,$(BUILD_DIR)/obj)"
 	@for %%F in ($(subst /,\,$(GENERATED_FILES))) do @if exist "%%F" del /Q "%%F"
 
--include $(APP_CPP_DEPS) $(APP_C_DEPS) $(STB_IMAGE_DEPS) $(TEST_SUPPORT_DEPS) $(TEST_DEPS) $(WREN_DEPS)
+clean-app:
+	@if exist "$(subst /,\,$(BUILD_DIR)/obj/app)" rmdir /S /Q "$(subst /,\,$(BUILD_DIR)/obj/app)"
+	@if exist "$(subst /,\,$(BUILD_DIR)/obj/test_support)" rmdir /S /Q "$(subst /,\,$(BUILD_DIR)/obj/test_support)"
+	@if exist "$(subst /,\,$(BUILD_DIR)/obj/tests)" rmdir /S /Q "$(subst /,\,$(BUILD_DIR)/obj/tests)"
+	@if exist "$(subst /,\,$(BUILD_DIR)/obj/wren)" rmdir /S /Q "$(subst /,\,$(BUILD_DIR)/obj/wren)"
+	@for %%F in ($(subst /,\,$(APP_GENERATED_FILES))) do @if exist "%%F" del /Q "%%F"
+
+-include $(APP_CPP_DEPS) $(JOLT_CPP_DEPS) $(APP_C_DEPS) $(STB_IMAGE_DEPS) $(TEST_SUPPORT_DEPS) $(TEST_DEPS) $(WREN_DEPS)
