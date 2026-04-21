@@ -24,8 +24,9 @@
 #include "physics/physics.h"
 #include "ecs/box_collider_component.h"
 #include "ecs/rigid_body_component.h"
+#include "scene/scene_loader.h"
 
-void game_loop(SDL_Window* window)
+void game_loop(SDL_Window *window)
 {
 	bool exitFlag = false;
 
@@ -34,8 +35,10 @@ void game_loop(SDL_Window* window)
 	ScriptManager scriptManager;
 	Renderer renderer("shaders/vertex_shader.vs", "shaders/fragment_shader.fs");
 	Physics physics;
+	SceneLoader sceneLoader;	
 	ECS ecs;
-	
+	Camera cam;
+
 	if (!scriptManager.initialize())
 	{
 		std::cout << "[Engine Error] ScriptManager failed to initialize\n";
@@ -50,79 +53,7 @@ void game_loop(SDL_Window* window)
 
 	audio.set_master_gain(1.0f);
 
-	EntityID audioObject = ecs.create_entity_record("Audio Test Object");
-
-	std::unique_ptr<AudioPlayer> audioPlayer = std::make_unique<AudioPlayer>();
-	audioPlayer->set_sound("assets/song.wav");
-	audioPlayer->set_looping(true);
-	audioPlayer->set_playing(true);
-	audioPlayer->set_full_volume_radius(15.0f);
-	audioPlayer->set_attenuation(0.01f);
-
-	std::unique_ptr<ScriptComponent> script = std::make_unique<ScriptComponent>();
-	script->set_module_name("test");
-
-	std::unique_ptr<MeshRenderer> meshRenderer = std::make_unique<MeshRenderer>();
-	meshRenderer->load_model("assets/scene.gltf");
-
-	std::unique_ptr<RigidBody> rigidBody = std::make_unique<RigidBody>();
-	BodyDesc terminalBodyDesc;
-	rigidBody->set_body_desc(terminalBodyDesc);
-
-	std::unique_ptr<BoxCollider> boxCol = std::make_unique<BoxCollider>();
-	boxCol->set_half_dimensions(glm::vec3(0.5f, 0.5f, 0.5f));
-
-	ecs.attach_component(audioObject, std::move(meshRenderer));
-	ecs.attach_component(audioObject, std::move(audioPlayer));
-	ecs.attach_component(audioObject, std::move(script));
-	ecs.attach_component(audioObject, std::move(rigidBody));
-	ecs.attach_component(audioObject, std::move(boxCol));
-
-	EntityID obj2 = ecs.create_entity_record("Object 2");
-	std::unique_ptr<ScriptComponent> script2 = std::make_unique<ScriptComponent>();
-	script2->set_module_name("test2");
-
-	ecs.attach_component(obj2, std::move(script2));
-
-	EntityID camObj = ecs.create_entity_record("Camera Object");
-	std::unique_ptr<ScriptComponent> camScript = std::make_unique<ScriptComponent>();
-	camScript->set_module_name("cam");
-
-	ecs.attach_component(camObj, std::move(camScript));
-
-	ecs.set_entity_local_scale(camObj, glm::vec3(0.5f, 1.0f, 0.3f));
-
-	EntityID camParent = ecs.create_entity_record("Camera Parent");
-	ecs.set_parent_entity(camObj, camParent, false);
-
-	Camera cam(camObj);
-	cam.set_is_orthographic(false);
-	cam.set_near_clipping_distance(0.1f);
-	cam.set_far_clipping_distance(1000.0f);
-	cam.set_zoom(90.0f);
-
-	EntityID floorObj = ecs.create_entity_record("Floor");
-
-	glm::vec3 floorPos = glm::vec3(0.0f, -10.0f, 0.0f);
-	ecs.set_entity_world_pos(floorObj, floorPos);
-
-	std::unique_ptr<RigidBody> floorRB = std::make_unique<RigidBody>();
-	BodyDesc floorDesc;
-	floorDesc.position = floorPos;
-	floorDesc.motionType = JPH::EMotionType::Static;
-	floorDesc.physicsLayer = 0;
-	floorRB->set_body_desc(floorDesc);
-
-	std::unique_ptr<BoxCollider> floorCol = std::make_unique<BoxCollider>();
-	floorCol->set_half_dimensions(glm::vec3(15.0f, 1.0f, 15.0f));
-
-	ecs.attach_component(floorObj, std::move(floorCol));
-	ecs.attach_component(floorObj, std::move(floorRB));
-
-	ecs.start(audioObject);
-	ecs.start(obj2);
-	ecs.start(camObj);
-	ecs.start(floorObj);
+	sceneLoader.load_and_initialize_scene("assets/scenes/test_scene.json");
 
 	auto lastFrameTime = std::chrono::steady_clock::now();
 
@@ -165,6 +96,7 @@ void game_loop(SDL_Window* window)
 		while (physicsAccumulator >= FIXED_DELTA_TIME)
 		{
 			physics.physics_update(static_cast<float>(FIXED_DELTA_TIME));
+			physics.dispatch_collision_events();
 			physicsAccumulator -= FIXED_DELTA_TIME;
 		}
 		ecs.sync_transforms();
@@ -179,7 +111,7 @@ void game_loop(SDL_Window* window)
 int main()
 {
 	SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO);
-	SDL_Window* window = SDL_CreateWindow("M3D", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
+	SDL_Window *window = SDL_CreateWindow("M3D", 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
 	SDL_SetWindowRelativeMouseMode(window, true);
 
 	if (!window)
@@ -213,11 +145,6 @@ int main()
 	glViewport(0, 0, 1280, 720);
 	glEnable(GL_DEPTH_TEST);
 	SDL_GL_SetSwapInterval(0);
-
-	std::cout << "OpenGL Loaded\n";
-	std::cout << "Vendor: " << glGetString(GL_VENDOR) << '\n';
-	std::cout << "Renderer: " << glGetString(GL_RENDERER) << '\n';
-	std::cout << "Version: " << glGetString(GL_VERSION) << '\n';
 
 	JPH::RegisterDefaultAllocator();
 

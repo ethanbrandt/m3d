@@ -13,7 +13,7 @@
 
 Camera* Camera::instance = nullptr;
 
-Camera::Camera(EntityID _entityID)
+Camera::Camera()
 {
 	if (Camera::instance)
 	{
@@ -21,7 +21,6 @@ Camera::Camera(EntityID _entityID)
 		return;
 	}
 
-	entityID = _entityID;
 	Camera::instance = this;
 }
 

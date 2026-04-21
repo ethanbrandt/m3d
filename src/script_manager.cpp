@@ -147,10 +147,19 @@ bool ScriptManager::initialize()
 		std::cout << "Error: Failed to create Wren VM\n";
 		return false;
 	}
+
 	ctorNew = wrenMakeCallHandle(vm, "new(_)");
 	onStart = wrenMakeCallHandle(vm, "on_start()");
 	onUpdate = wrenMakeCallHandle(vm, "on_update(_)");
+	onDestroy = wrenMakeCallHandle(vm, "on_destroy()");
 
+	onCollisionEnter = wrenMakeCallHandle(vm, "on_collision_enter(_)");
+	onCollisionStay = wrenMakeCallHandle(vm, "on_collision_stay(_)");
+	onCollisionExit = wrenMakeCallHandle(vm, "on_collision_exit(_)");
+
+	onTriggerEnter = wrenMakeCallHandle(vm, "on_trigger_enter(_)");
+	onTriggerStay = wrenMakeCallHandle(vm, "on_trigger_stay(_)");
+	onTriggerExit = wrenMakeCallHandle(vm, "on_trigger_exit(_)");
 
 	const char* bootstrap = "import \"m3d\" for GameObject";
 	if (wrenInterpret(vm, "__m3d_bootstrap", bootstrap) != WREN_RESULT_SUCCESS)
@@ -191,14 +200,28 @@ ScriptManager::~ScriptManager()
 	if (ctorNew)
 		wrenReleaseHandle(vm, ctorNew);
 	
+	if (onCollisionEnter)
+		wrenReleaseHandle(vm, onCollisionEnter);
+	if (onCollisionStay)
+		wrenReleaseHandle(vm, onCollisionStay);
+	if (onCollisionExit)
+		wrenReleaseHandle(vm, onCollisionExit);
+
+	if (onTriggerEnter)
+		wrenReleaseHandle(vm, onTriggerEnter);
+	if (onTriggerStay)
+		wrenReleaseHandle(vm, onTriggerStay);
+	if (onTriggerExit)
+		wrenReleaseHandle(vm, onTriggerExit);
+
 	if (vm)
 		wrenFreeVM(vm);
 }
 
-void ScriptManager::register_script(EntityID entityID, ComponentID componentID, std::string scriptFilePath)
+void ScriptManager::register_script(EntityID entityID, ComponentID componentID, std::string moduleName)
 {
-	attach_script(entityID, componentID, scriptFilePath);
-	//TODO scriptFilePath stuff
+	if (!attach_script(entityID, componentID, moduleName))
+		std::cout << "[Script System Error] Failed to attach script: " << moduleName << '\n';
 }
 
 void ScriptManager::remove_dirty_scripts()
@@ -231,24 +254,160 @@ void ScriptManager::update_script(ComponentID id, float deltaTime)
 	wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
 	wrenSetSlotDouble(vm, 1, deltaTime);
 	if (wrenCall(vm, onUpdate))
-		std::cout << "Error: failed to run on_update in " + scripts.at(id).moduleName + '\n';
+		std::cout << "[Script System Error] Failed to run on_update in " + scripts.at(id).moduleName + '\n';
 }
 
 void ScriptManager::update_all_scripts(float deltaTime)
 {
 	for (auto& [componentID, scriptBinding] : scripts)
-	{
-		wrenEnsureSlots(vm, 2);
-		wrenSetSlotHandle(vm, 0, scriptBinding.scriptHandle);
-		wrenSetSlotDouble(vm, 1, deltaTime);
-		if (wrenCall(vm, onUpdate))
-			std::cout << "[Script System Error] Failed to run on_update in " + scriptBinding.moduleName + '\n';
-	}
+		update_script(componentID, deltaTime);
 }
 
 void ScriptManager::destroy_script(ComponentID id)
 {
+	wrenEnsureSlots(vm, 1);
+	wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+	if (wrenCall(vm, onDestroy))
+		std::cout << "[Script System Error] Failed to run on_destroy in " + scripts.at(id).moduleName + '\n';
 	dirtyScripts.insert(id);
+}
+
+void ScriptManager::collision_enter_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onCollisionEnter))
+			std::cout << "[Script System Error] Failed to run on_collision_enter in " + scripts.at(id).moduleName + '\n';
+	}
+}
+
+void ScriptManager::collision_stay_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onCollisionStay))
+			std::cout << "[Script System Error] Failed to run on_collision_stay in " + scripts.at(id).moduleName + '\n';
+	}
+}
+
+void ScriptManager::collision_exit_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onCollisionExit))
+			std::cout << "[Script System Error] Failed to run on_collision_exit in " + scripts.at(id).moduleName + '\n';
+	}
+}
+
+void ScriptManager::trigger_enter_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onTriggerEnter))
+			std::cout << "[Script System Error] Failed to run on_trigger_enter in " + scripts.at(id).moduleName + '\n';
+	}
+}
+
+void ScriptManager::trigger_stay_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onTriggerStay))
+			std::cout << "[Script System Error] Failed to run on_trigger_stay in " + scripts.at(id).moduleName + '\n';
+	}
+}
+
+void ScriptManager::trigger_exit_script_event(EntityID entityID, EntityID otherID)
+{
+	if (!entityID.isValid() || !otherID.isValid())
+		return;
+
+	std::set<ComponentID> attachedScripts = ECS::instance->get_all_component_ids_of_type(entityID, ComponentType::SCRIPT);
+
+	for (auto& id : attachedScripts)
+	{
+		wrenEnsureSlots(vm, 3);
+		wrenSetSlotHandle(vm, 0, scripts.at(id).scriptHandle);
+		wrenGetVariable(vm, "m3d", "GameObject", 2);
+
+		auto* otherRef = static_cast<GameObjectData*>(wrenSetSlotNewForeign(vm, 1, 2, sizeof(GameObjectData)));
+
+		new (otherRef) GameObjectData{};
+		otherRef->entityID = otherID;
+
+		if (wrenCall(vm, onTriggerExit))
+			std::cout << "[Script System Error] Failed to run on_trigger_exit in " + scripts.at(id).moduleName + '\n';
+	}
 }
 
 void ScriptManager::force_garbage_collect()

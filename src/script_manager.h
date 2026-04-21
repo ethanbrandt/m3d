@@ -133,6 +133,13 @@ private:
 	WrenHandle* ctorNew = nullptr;
 	WrenHandle* onStart = nullptr;
 	WrenHandle* onUpdate = nullptr;
+	WrenHandle* onDestroy = nullptr;
+	WrenHandle* onCollisionEnter = nullptr;
+	WrenHandle* onCollisionStay = nullptr;
+	WrenHandle* onCollisionExit = nullptr;
+	WrenHandle* onTriggerEnter = nullptr;
+	WrenHandle* onTriggerStay = nullptr;
+	WrenHandle* onTriggerExit = nullptr;
 	WrenHandle* gameObjectClass = nullptr;
 
 	static WrenLoadModuleResult load_module(WrenVM*, const char* name);
@@ -250,13 +257,21 @@ public:
 	ScriptManager();
 	~ScriptManager();
 
-	void register_script(EntityID entityID, ComponentID componentID, std::string scriptFilePath); //TODO
+	void register_script(EntityID entityID, ComponentID componentID, std::string moduleName);
 	void remove_dirty_scripts();
 
 	void start_script(ComponentID id);
 	void update_script(ComponentID id, float deltaTime);
 	void update_all_scripts(float deltaTime);
-	void destroy_script(ComponentID id); //TODO
+	void destroy_script(ComponentID id);
+
+	void collision_enter_script_event(EntityID entityID, EntityID otherID);
+	void collision_stay_script_event(EntityID entityID, EntityID otherID);
+	void collision_exit_script_event(EntityID entityID, EntityID otherID);
+
+	void trigger_enter_script_event(EntityID entityID, EntityID otherID);
+	void trigger_stay_script_event(EntityID entityID, EntityID otherID);
+	void trigger_exit_script_event(EntityID entityID, EntityID otherID);
 
 	void force_garbage_collect();
 };

@@ -12,7 +12,7 @@ class Camera
 public:
 	static Camera* instance;
 
-	Camera(EntityID _entityID);
+	Camera();
 	~Camera();
 
 	static bool is_active();

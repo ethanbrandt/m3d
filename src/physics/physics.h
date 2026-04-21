@@ -21,6 +21,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 
 #include "../ecs/ecs.h"
 
@@ -72,10 +73,44 @@ struct BodyDesc
 	bool isSensor = false;
 };
 
-class Physics
+enum CollisionPhase
+{
+	ENTER,
+	STAY,
+	EXIT
+};
+
+struct CollisionEvent
+{
+	EntityID self;
+	EntityID other;
+	bool isTrigger;
+	CollisionPhase phase;
+};
+
+class Physics;
+
+class PhysicsContactListener final : public JPH::ContactListener
 {
 private:
+	Physics& physics;
+	std::unordered_map<JPH::SubShapeIDPair, bool> subShapePairIsTriggerCache;
+public:
+	PhysicsContactListener(Physics& _physics) : physics(_physics) {};
+
+	void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings& settings) override;
+	void OnContactPersisted(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings& settings) override;
+	void OnContactRemoved(const JPH::SubShapeIDPair& pair) override;
+};
+
+class Physics
+{
+
+private:
 	std::unordered_map<JPH::BodyID, EntityID> bodyToEntity;
+
+	std::deque<CollisionEvent> collisionEventQueue;
+	PhysicsContactListener contactListener;
 
 	JPH::ObjectLayerPairFilterTable objectLayerPairFilter;
 	JPH::BroadPhaseLayerInterfaceTable broadPhaseLayerInterface;
@@ -92,6 +127,8 @@ private:
 	JPH::RefConst<JPH::Shape> create_shape(const ColliderShapeDesc& shapeDesc);
 	JPH::RefConst<JPH::Shape> apply_local_offset(JPH::RefConst<JPH::Shape> shape, const glm::vec3& positionOffset, const glm::quat& rotationOffset);
 
+	friend PhysicsContactListener;
+
 public:
 	static Physics* instance;
 
@@ -106,6 +143,7 @@ public:
 	void sync_physics_transforms();
 
 	void physics_update(float fixedDeltaTime);
+	void dispatch_collision_events();
 
 	JPH::EMotionType get_body_motion_type(JPH::BodyID bodyID);
 	void set_body_motion_type(JPH::BodyID bodyID, JPH::EMotionType motionType);

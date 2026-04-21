@@ -28,6 +28,7 @@
 
 #include "physics.h"
 #include "../ecs/ecs.h"
+#include "../script_manager.h"
 
 Physics* Physics::instance = nullptr;
 
@@ -119,7 +120,7 @@ JPH::RefConst<JPH::Shape> Physics::apply_local_offset(JPH::RefConst<JPH::Shape> 
 	return new JPH::RotatedTranslatedShape(to_jolt(positionOffset), to_jolt(rotationOffset), shape.GetPtr());
 }
 
-Physics::Physics() : objectLayerPairFilter(NUM_OBJECT_LAYERS), broadPhaseLayerInterface(NUM_OBJECT_LAYERS, NUM_BROAD_PHASE_LAYERS), tempAllocator(TEMP_ALLOCATOR_SIZE), jobSystem(MAX_PHYSICS_JOBS, MAX_PHYSICS_BARRIERS, -1)
+Physics::Physics() : objectLayerPairFilter(NUM_OBJECT_LAYERS), broadPhaseLayerInterface(NUM_OBJECT_LAYERS, NUM_BROAD_PHASE_LAYERS), tempAllocator(TEMP_ALLOCATOR_SIZE), jobSystem(MAX_PHYSICS_JOBS, MAX_PHYSICS_BARRIERS, -1), contactListener(*this)
 {
 	Physics::instance = this;
 
@@ -141,6 +142,7 @@ Physics::Physics() : objectLayerPairFilter(NUM_OBJECT_LAYERS), broadPhaseLayerIn
 	objectVsBroadPhaseLayerFilter = std::make_unique<JPH::ObjectVsBroadPhaseLayerFilterTable>(broadPhaseLayerInterface, NUM_BROAD_PHASE_LAYERS, objectLayerPairFilter, NUM_OBJECT_LAYERS);
 
 	physicsSystem.Init(MAX_BODIES, NUM_BODY_MUTEXES, MAX_BODY_PAIRS, MAX_CONTACT_CONSTRAINTS, broadPhaseLayerInterface, *objectVsBroadPhaseLayerFilter, objectLayerPairFilter);
+	physicsSystem.SetContactListener(&contactListener);
 	physicsSystem.SetGravity(JPH::Vec3(0.0f, -9.81, 0.0f));
 }
 
@@ -273,6 +275,48 @@ void Physics::physics_update(float fixedDeltaTime)
 	}
 }
 
+void Physics::dispatch_collision_events()
+{
+	ScriptManager* scriptManager = ScriptManager::instance;
+
+	while (!collisionEventQueue.empty())
+	{
+		CollisionEvent e = collisionEventQueue.front();
+		collisionEventQueue.pop_front();
+
+		if (e.isTrigger)
+		{
+			switch (e.phase)
+			{
+				case CollisionPhase::ENTER:
+					scriptManager->trigger_enter_script_event(e.self, e.other);
+					break;
+				case CollisionPhase::STAY:
+					scriptManager->trigger_stay_script_event(e.self, e.other);
+					break;
+				case CollisionPhase::EXIT:
+					scriptManager->trigger_exit_script_event(e.self, e.other);
+					break;
+			}
+		}
+		else
+		{
+			switch (e.phase)
+			{
+				case CollisionPhase::ENTER:
+					scriptManager->collision_enter_script_event(e.self, e.other);
+					break;
+				case CollisionPhase::STAY:
+					scriptManager->collision_stay_script_event(e.self, e.other);
+					break;
+				case CollisionPhase::EXIT:
+					scriptManager->collision_exit_script_event(e.self, e.other);
+					break;
+			}
+		}
+	}
+}
+
 JPH::EMotionType Physics::get_body_motion_type(JPH::BodyID bodyID)
 {
 	return physicsSystem.GetBodyInterface().GetMotionType(bodyID);
@@ -394,4 +438,46 @@ void Physics::add_angular_force_to_body(JPH::BodyID bodyID, glm::vec3 angularFor
 void Physics::add_angular_impulse_to_body(JPH::BodyID bodyID, glm::vec3 angularForce)
 {
 	physicsSystem.GetBodyInterface().AddAngularImpulse(bodyID, to_jolt(angularForce));
+}
+
+void PhysicsContactListener::OnContactAdded(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &manifold, JPH::ContactSettings &settings)
+{
+	EntityID entity1 = physics.bodyToEntity.at(body1.GetID());
+	EntityID entity2 = physics.bodyToEntity.at(body2.GetID());
+
+	if (!entity1.isValid() || !entity2.isValid())
+		return;
+
+	JPH::SubShapeIDPair subShapePair = { body1.GetID(), manifold.mSubShapeID1, body2.GetID(), manifold.mSubShapeID2 };
+	subShapePairIsTriggerCache.emplace( subShapePair, settings.mIsSensor);
+	
+	physics.collisionEventQueue.push_back( { entity1, entity2, settings.mIsSensor, CollisionPhase::ENTER } );
+	physics.collisionEventQueue.push_back( { entity2, entity1, settings.mIsSensor, CollisionPhase::ENTER } );
+}
+
+void PhysicsContactListener::OnContactPersisted(const JPH::Body &body1, const JPH::Body &body2, const JPH::ContactManifold &manifold, JPH::ContactSettings &settings)
+{
+	EntityID entity1 = physics.bodyToEntity.at(body1.GetID());
+	EntityID entity2 = physics.bodyToEntity.at(body2.GetID());
+
+	if (!entity1.isValid() || !entity2.isValid())
+		return;
+
+	physics.collisionEventQueue.push_back( { entity1, entity2, settings.mIsSensor, CollisionPhase::STAY } );
+	physics.collisionEventQueue.push_back( { entity2, entity1, settings.mIsSensor, CollisionPhase::STAY } );
+}
+
+void PhysicsContactListener::OnContactRemoved(const JPH::SubShapeIDPair &pair)
+{
+	EntityID entity1 = physics.bodyToEntity.at(pair.GetBody1ID());
+	EntityID entity2 = physics.bodyToEntity.at(pair.GetBody2ID());
+
+	if (!entity1.isValid() || !entity2.isValid())
+		return;
+	
+	bool isSensor = subShapePairIsTriggerCache.at(pair);
+	subShapePairIsTriggerCache.erase(pair);
+
+	physics.collisionEventQueue.push_back( { entity1, entity2, isSensor, CollisionPhase::EXIT } );
+	physics.collisionEventQueue.push_back( { entity2, entity1, isSensor, CollisionPhase::EXIT } );
 }
